@@ -98,6 +98,7 @@ func handleFile(filePath string) error {
 
 		certificateLintField[0].Decorations().Before = dst.NewLine
 		certificateLintField[1].Decorations().Before = dst.NewLine
+		certificateLintField[1].Decorations().After = dst.NewLine
 
 		lintCertificateLint := &dst.CompositeLit{
 			Type: &dst.SelectorExpr{

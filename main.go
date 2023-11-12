@@ -4,17 +4,17 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"go/ast"
+	"github.com/dave/dst"
 	"go/parser"
-	"go/printer"
 	"go/token"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
 
+	"github.com/dave/dst/decorator"
+	"github.com/dave/dst/dstutil"
 	"github.com/davecgh/go-spew/spew"
-	"golang.org/x/tools/go/ast/astutil"
 )
 
 var (
@@ -46,110 +46,109 @@ func handleFile(filePath string) error {
 	}
 
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, filePath, oldSrc, parser.ParseComments)
+	//file, err := parser.ParseFile(fset, filePath, oldSrc, parser.ParseComments)
+	//if err != nil {
+	//	return fmt.Errorf("unable to parse file: %w", err)
+	//}
+
+	file, err := decorator.ParseFile(fset, filePath, oldSrc, parser.ParseComments)
 	if err != nil {
 		return fmt.Errorf("unable to parse file: %w", err)
 	}
 
 	var astutilErr error
-	astutil.Apply(file, nil, func(cursor *astutil.Cursor) bool {
-		node, ok := cursor.Node().(*ast.CallExpr)
+	dstutil.Apply(file, nil, func(cursor *dstutil.Cursor) bool {
+
+		node, ok := cursor.Node().(*dst.CallExpr)
 		if !ok {
 			// Not at init yet
 			return true
 		}
-		if _, ok := node.Fun.(*ast.SelectorExpr); !ok {
+		if _, ok := node.Fun.(*dst.SelectorExpr); !ok {
 			return false
 		}
 		// We don't want to touch non RegisterLint methods.
-		if node.Fun.(*ast.SelectorExpr).Sel.Name != "RegisterLint" {
+		if node.Fun.(*dst.SelectorExpr).Sel.Name != "RegisterLint" {
 			return true
 		}
 
-		functionCall := &ast.SelectorExpr{
-			X:   ast.NewIdent("lint"),
-			Sel: ast.NewIdent("RegisterCertificateLint"),
+		functionCall := &dst.SelectorExpr{
+			X:   dst.NewIdent("lint"),
+			Sel: dst.NewIdent("RegisterCertificateLint"),
 		}
 
-		metadataFields := &ast.CompositeLit{
-			Type: &ast.SelectorExpr{
-				X:   ast.NewIdent("lint"),
-				Sel: ast.NewIdent("LintMetadata"),
+		metadataFields := &dst.CompositeLit{
+			Type: &dst.SelectorExpr{
+				X:   dst.NewIdent("lint"),
+				Sel: dst.NewIdent("LintMetadata"),
 			},
-			Elts:   nil,
-			Lbrace: 0,
-			Rbrace: 0,
+			Elts: nil,
 		}
 
-		certificateLintField := []ast.Expr{
-			&ast.KeyValueExpr{
-				Key:   ast.NewIdent("LintMetadata"),
+		certificateLintField := []dst.Expr{
+			&dst.KeyValueExpr{
+				Key:   dst.NewIdent("LintMetadata"),
 				Value: metadataFields,
-				Colon: 0,
 			},
-			&ast.KeyValueExpr{
-				Key:   ast.NewIdent("Lint"),
+			&dst.KeyValueExpr{
+				Key:   dst.NewIdent("Lint"),
 				Value: nil,
-				Colon: 0,
 			},
 		}
 
-		lintCertificateLint := &ast.CompositeLit{
-			Type: &ast.SelectorExpr{
-				X:   ast.NewIdent("lint"),
-				Sel: ast.NewIdent("CertificateLint"),
+		certificateLintField[0].Decorations().Before = dst.NewLine
+		certificateLintField[1].Decorations().Before = dst.NewLine
+		certificateLintField[1].Decorations().After = dst.NewLine
+
+		lintCertificateLint := &dst.CompositeLit{
+			Type: &dst.SelectorExpr{
+				X:   dst.NewIdent("lint"),
+				Sel: dst.NewIdent("CertificateLint"),
 			},
-			Elts:   certificateLintField,
-			Lbrace: 0,
-			Rbrace: 0,
+			Elts: certificateLintField,
 		}
 
-		arguments := &ast.UnaryExpr{
-			Op:    token.AND,
-			X:     lintCertificateLint,
-			OpPos: 0,
+		arguments := &dst.UnaryExpr{
+			Op: token.AND,
+			X:  lintCertificateLint,
 		}
 
 		// Loop over existing metadata fields
-		for _, elt := range node.Args[0].(*ast.UnaryExpr).X.(*ast.CompositeLit).Elts {
-			kv, ok := elt.(*ast.KeyValueExpr)
+		for _, elt := range node.Args[0].(*dst.UnaryExpr).X.(*dst.CompositeLit).Elts {
+			kv, ok := elt.(*dst.KeyValueExpr)
 			if !ok {
 				astutilErr = fmt.Errorf("CompositeLit field was was not KV: %v", spew.Sdump(elt))
 				return false
 			}
-			key, ok := kv.Key.(*ast.Ident)
+			key, ok := kv.Key.(*dst.Ident)
 			if !ok {
 				astutilErr = fmt.Errorf("KV key was not Ident: %v", spew.Sdump(kv.Key))
 				return false
 			}
 			switch key.Name {
 			case "Lint":
-				certificateLintField[1].(*ast.KeyValueExpr).Value = kv.Value
+				certificateLintField[1].(*dst.KeyValueExpr).Value = kv.Value
 			default:
 				// TODO: Remove the Location values from these elements, maybe?
 				metadataFields.Elts = append(metadataFields.Elts, kv)
 			}
 		}
 
-		newCallExpr := &ast.CallExpr{
-			Fun:    functionCall,
-			Args:   []ast.Expr{arguments},
-			Lparen: 0,
-			Rparen: 0,
+		newCallExpr := &dst.CallExpr{
+			Fun:  functionCall,
+			Args: []dst.Expr{arguments},
 		}
 		cursor.Replace(newCallExpr)
 		return true
 	})
+
 	if astutilErr != nil {
 		return fmt.Errorf("issue manipulating AST: %w", astutilErr)
 	}
 
 	var buf bytes.Buffer
-	cfg := printer.Config{
-		Mode:     printer.UseSpaces | printer.TabIndent,
-		Tabwidth: 8,
-	}
-	if err := cfg.Fprint(&buf, fset, file); err != nil {
+
+	if err := decorator.Fprint(&buf, file); err != nil {
 		return fmt.Errorf("error when printing AST: %w", err)
 	}
 
